@@ -8535,23 +8535,68 @@ static void test_get_logs_limit(void) {
   g_assert_cmpint(logs->len, ==, 1);
 }
 
-static void test_stress(void) {
-  g_autoptr(MockSnapd) snapd = mock_snapd_new();
+typedef struct {
+    GMainLoop *loop;
+    guint done;
+    const guint wants;
+} SystemInfoData;
+
+static void
+on_get_system_information_async(GObject *obj, GAsyncResult *result, gpointer data)
+{
+  SystemInfoData *sid = data;
 
   g_autoptr(GError) error = NULL;
+  g_autoptr(SnapdSystemInformation) info =
+      snapd_client_get_system_information_finish(SNAPD_CLIENT(obj), result,
+                                                 &error);
+  g_assert_no_error(error);
+  g_assert_nonnull(info);
+
+  g_assert_no_error(error);
+  g_assert_nonnull(info);
+  g_assert_cmpstr(snapd_system_information_get_version(info), ==, "VERSION");
+
+  if (++sid->done == sid->wants)
+      g_main_loop_quit (sid->loop);
+}
+
+static void test_stress_on_idle(gpointer data)
+{
+ SystemInfoData *sid = data;
+  g_autoptr(GError) error = NULL;
+  g_autoptr(MockSnapd) snapd = mock_snapd_new();
   g_assert_true(mock_snapd_start(snapd, &error));
+  g_assert_no_error (error);
 
   g_autoptr(SnapdClient) client = snapd_client_new();
   snapd_client_set_socket_path(client, mock_snapd_get_socket_path(snapd));
 
-  for (gint i = 0; i < 10000; i++) {
-    g_autoptr(GError) error = NULL;
-    g_autoptr(SnapdSystemInformation) info =
-        snapd_client_get_system_information_sync(client, NULL, &error);
-    g_assert_no_error(error);
-    g_assert_nonnull(info);
-    g_assert_cmpstr(snapd_system_information_get_version(info), ==, "VERSION");
+  for (gint i = 0; i < sid->wants; i++) {
+    snapd_client_get_system_information_async(client, NULL,
+            on_get_system_information_async, sid);
   }
+}
+
+static void test_stress(void) {
+  g_autoptr(GMainLoop) loop = g_main_loop_new(NULL, FALSE);
+  SystemInfoData data = {.loop = loop, .done = 0, .wants = 100000};
+
+  SystemInfoData *sid = &data;
+  g_autoptr(GError) error = NULL;
+  g_autoptr(MockSnapd) snapd = mock_snapd_new();
+  g_assert_true(mock_snapd_start(snapd, &error));
+  g_assert_no_error (error);
+
+  g_autoptr(SnapdClient) client = snapd_client_new();
+  snapd_client_set_socket_path(client, mock_snapd_get_socket_path(snapd));
+
+  for (gint i = 0; i < sid->wants; i++) {
+    snapd_client_get_system_information_async(client, NULL,
+            on_get_system_information_async, sid);
+  }
+
+  g_main_loop_run (loop);
 }
 
 static void sync_log_cb(SnapdClient *client, SnapdLog *log,
@@ -9232,329 +9277,6 @@ static void test_non_existent_abstract_socket(void) {
 int main(int argc, char **argv) {
   g_test_init(&argc, &argv, NULL);
 
-  g_test_add_func("/socket/test_abstract_socket", test_abstract_socket);
-  g_test_add_func("/socket/test_not_existing_abstract_socket",
-                  test_non_existent_abstract_socket);
-  g_test_add_func("/notices/test_task_data_field", test_task_data_field);
-  g_test_add_func("/errors/test_error_get_change", test_error_get_change);
-  g_test_add_func("/notices/test_notices", test_notices_events);
-  g_test_add_func("/notices/test_minimal_data",
-                  test_notices_events_with_minimal_data);
-  g_test_add_func("/notices/test_notice_comparison", test_notice_comparison);
-
-  g_test_add_func("/socket-closed/before-request",
-                  test_socket_closed_before_request);
-  g_test_add_func("/socket-closed/after-request",
-                  test_socket_closed_after_request);
-  g_test_add_func("/socket-closed/reconnect", test_socket_closed_reconnect);
-  g_test_add_func("/socket-closed/reconnect-after-failure",
-                  test_socket_closed_reconnect_after_failure);
-  g_test_add_func("/client/set-socket-path", test_client_set_socket_path);
-  g_test_add_func("/user-agent/default", test_user_agent_default);
-  g_test_add_func("/user-agent/custom", test_user_agent_custom);
-  g_test_add_func("/user-agent/null", test_user_agent_null);
-  g_test_add_func("/accept-language/basic", test_accept_language);
-  g_test_add_func("/accept-language/empty", test_accept_language_empty);
-  g_test_add_func("/allow-interaction/basic", test_allow_interaction);
-  g_test_add_func("/maintenance/none", test_maintenance_none);
-  g_test_add_func("/maintenance/daemon-restart",
-                  test_maintenance_daemon_restart);
-  g_test_add_func("/maintenance/system-restart",
-                  test_maintenance_system_restart);
-  g_test_add_func("/maintenance/unknown", test_maintenance_unknown);
-  g_test_add_func("/get-system-information/sync",
-                  test_get_system_information_sync);
-  g_test_add_func("/get-system-information/async",
-                  test_get_system_information_async);
-  g_test_add_func("/get-system-information/store",
-                  test_get_system_information_store);
-  g_test_add_func("/get-system-information/refresh",
-                  test_get_system_information_refresh);
-  g_test_add_func("/get-system-information/refresh_schedule",
-                  test_get_system_information_refresh_schedule);
-  g_test_add_func("/get-system-information/confinement_strict",
-                  test_get_system_information_confinement_strict);
-  g_test_add_func("/get-system-information/confinement_none",
-                  test_get_system_information_confinement_none);
-  g_test_add_func("/get-system-information/confinement_unknown",
-                  test_get_system_information_confinement_unknown);
-  g_test_add_func("/login/sync", test_login_sync);
-  g_test_add_func("/login/async", test_login_async);
-  g_test_add_func("/login/invalid-email", test_login_invalid_email);
-  g_test_add_func("/login/invalid-password", test_login_invalid_password);
-  g_test_add_func("/login/otp-missing", test_login_otp_missing);
-  g_test_add_func("/login/otp-invalid", test_login_otp_invalid);
-  g_test_add_func("/login/legacy", test_login_legacy);
-  g_test_add_func("/logout/sync", test_logout_sync);
-  g_test_add_func("/logout/async", test_logout_async);
-  g_test_add_func("/logout/no-auth", test_logout_no_auth);
-  g_test_add_func("/get-changes/sync", test_get_changes_sync);
-  g_test_add_func("/get-changes/async", test_get_changes_async);
-  g_test_add_func("/get-changes/filter-in-progress",
-                  test_get_changes_filter_in_progress);
-  g_test_add_func("/get-changes/filter-ready", test_get_changes_filter_ready);
-  g_test_add_func("/get-changes/filter-snap", test_get_changes_filter_snap);
-  g_test_add_func("/get-changes/filter-ready-snap",
-                  test_get_changes_filter_ready_snap);
-  g_test_add_func("/get-changes/data", test_get_changes_data);
-  g_test_add_func("/get-change/sync", test_get_change_sync);
-  g_test_add_func("/get-change/async", test_get_change_async);
-  g_test_add_func("/abort-change/sync", test_abort_change_sync);
-  g_test_add_func("/abort-change/async", test_abort_change_async);
-  g_test_add_func("/list/sync", test_list_sync);
-  g_test_add_func("/list/async", test_list_async);
-  g_test_add_func("/get-snaps/sync", test_get_snaps_sync);
-  g_test_add_func("/get_snaps/inhibited", test_get_snaps_inhibited);
-  g_test_add_func("/get-snaps/async", test_get_snaps_async);
-  g_test_add_func("/get-snaps/filter", test_get_snaps_filter);
-  g_test_add_func("/list-one/sync", test_list_one_sync);
-  g_test_add_func("/list-one/async", test_list_one_async);
-  g_test_add_func("/get-snap/sync", test_get_snap_sync);
-  g_test_add_func("/get-snap/async", test_get_snap_async);
-  g_test_add_func("/get-snap/types", test_get_snap_types);
-  g_test_add_func("/get-snap/optional-fields", test_get_snap_optional_fields);
-  g_test_add_func("/get-snap/deprecated-fields",
-                  test_get_snap_deprecated_fields);
-  g_test_add_func("/get-snap/common-ids", test_get_snap_common_ids);
-  g_test_add_func("/get-snap/not-installed", test_get_snap_not_installed);
-  g_test_add_func("/get-snap/classic-confinement",
-                  test_get_snap_classic_confinement);
-  g_test_add_func("/get-snap/devmode-confinement",
-                  test_get_snap_devmode_confinement);
-  g_test_add_func("/get-snap/daemons", test_get_snap_daemons);
-  g_test_add_func("/get-snap/publisher-starred",
-                  test_get_snap_publisher_starred);
-  g_test_add_func("/get-snap/publisher-verified",
-                  test_get_snap_publisher_verified);
-  g_test_add_func("/get-snap/publisher-unproven",
-                  test_get_snap_publisher_unproven);
-  g_test_add_func("/get-snap/publisher-unknown-validation",
-                  test_get_snap_publisher_unknown_validation);
-  g_test_add_func("/get-snap-conf/sync", test_get_snap_conf_sync);
-  g_test_add_func("/get-snap-conf/async", test_get_snap_conf_async);
-  g_test_add_func("/get-snap-conf/key-filter", test_get_snap_conf_key_filter);
-  g_test_add_func("/get-snap-conf/invalid-key", test_get_snap_conf_invalid_key);
-  g_test_add_func("/set-snap-conf/sync", test_set_snap_conf_sync);
-  g_test_add_func("/set-snap-conf/async", test_set_snap_conf_async);
-  g_test_add_func("/set-snap-conf/invalid", test_set_snap_conf_invalid);
-  g_test_add_func("/get-apps/sync", test_get_apps_sync);
-  g_test_add_func("/get-apps/async", test_get_apps_async);
-  g_test_add_func("/get-apps/services", test_get_apps_services);
-  g_test_add_func("/get-apps/filter", test_get_apps_filter);
-  g_test_add_func("/icon/sync", test_icon_sync);
-  g_test_add_func("/icon/async", test_icon_async);
-  g_test_add_func("/icon/not-installed", test_icon_not_installed);
-  g_test_add_func("/icon/large", test_icon_large);
-  g_test_add_func("/get-assertions/sync", test_get_assertions_sync);
-  // g_test_add_func ("/get-assertions/async", test_get_assertions_async);
-  g_test_add_func("/get-assertions/body", test_get_assertions_body);
-  g_test_add_func("/get-assertions/multiple", test_get_assertions_multiple);
-  g_test_add_func("/get-assertions/invalid", test_get_assertions_invalid);
-  g_test_add_func("/add-assertions/sync", test_add_assertions_sync);
-  // g_test_add_func ("/add-assertions/async", test_add_assertions_async);
-  g_test_add_func("/assertions/sync", test_assertions_sync);
-  // g_test_add_func ("/assertions/async", test_assertions_async);
-  g_test_add_func("/assertions/body", test_assertions_body);
-  g_test_add_func("/get-connections/sync", test_get_connections_sync);
-  g_test_add_func("/get-connections/async", test_get_connections_async);
-  g_test_add_func("/get-connections/empty", test_get_connections_empty);
-  g_test_add_func("/get-connections/filter-all",
-                  test_get_connections_filter_all);
-  g_test_add_func("/get-connections/filter-snap",
-                  test_get_connections_filter_snap);
-  g_test_add_func("/get-connections/filter-interface",
-                  test_get_connections_filter_interface);
-  g_test_add_func("/get-connections/attributes",
-                  test_get_connections_attributes);
-  g_test_add_func("/get-interfaces/sync", test_get_interfaces_sync);
-  g_test_add_func("/get-interfaces/async", test_get_interfaces_async);
-  g_test_add_func("/get-interfaces/no-snaps", test_get_interfaces_no_snaps);
-  g_test_add_func("/get-interfaces/attributes", test_get_interfaces_attributes);
-  g_test_add_func("/get-interfaces/legacy", test_get_interfaces_legacy);
-  g_test_add_func("/get-interfaces2/sync", test_get_interfaces2_sync);
-  g_test_add_func("/get-interfaces2/async", test_get_interfaces2_async);
-  g_test_add_func("/get-interfaces2/only-connected",
-                  test_get_interfaces2_only_connected);
-  g_test_add_func("/get-interfaces2/slots", test_get_interfaces2_slots);
-  g_test_add_func("/get-interfaces2/plugs", test_get_interfaces2_plugs);
-  g_test_add_func("/get-interfaces2/filter", test_get_interfaces2_filter);
-  g_test_add_func("/get-interfaces2/make-label",
-                  test_get_interfaces2_make_label);
-  g_test_add_func("/connect-interface/sync", test_connect_interface_sync);
-  g_test_add_func("/connect-interface/async", test_connect_interface_async);
-  g_test_add_func("/connect-interface/progress",
-                  test_connect_interface_progress);
-  g_test_add_func("/connect-interface/invalid", test_connect_interface_invalid);
-  g_test_add_func("/disconnect-interface/sync", test_disconnect_interface_sync);
-  g_test_add_func("/disconnect-interface/async",
-                  test_disconnect_interface_async);
-  g_test_add_func("/disconnect-interface/progress",
-                  test_disconnect_interface_progress);
-  g_test_add_func("/disconnect-interface/invalid",
-                  test_disconnect_interface_invalid);
-  g_test_add_func("/find/query", test_find_query);
-  g_test_add_func("/find/query-private", test_find_query_private);
-  g_test_add_func("/find/query-private/not-logged-in",
-                  test_find_query_private_not_logged_in);
-  g_test_add_func("/find/bad-query", test_find_bad_query);
-  g_test_add_func("/find/network-timeout", test_find_network_timeout);
-  g_test_add_func("/find/dns-failure", test_find_dns_failure);
-  g_test_add_func("/find/name", test_find_name);
-  g_test_add_func("/find/name-private", test_find_name_private);
-  g_test_add_func("/find/name-private/not-logged-in",
-                  test_find_name_private_not_logged_in);
-  g_test_add_func("/find/channels", test_find_channels);
-  g_test_add_func("/find/channels-match", test_find_channels_match);
-  g_test_add_func("/find/cancel", test_find_cancel);
-  g_test_add_func("/find/section", test_find_section);
-  g_test_add_func("/find/section-query", test_find_section_query);
-  g_test_add_func("/find/section-name", test_find_section_name);
-  g_test_add_func("/find/category", test_find_category);
-  g_test_add_func("/find/category-query", test_find_category_query);
-  g_test_add_func("/find/category-name", test_find_category_name);
-  g_test_add_func("/find/scope-narrow", test_find_scope_narrow);
-  g_test_add_func("/find/scope-wide", test_find_scope_wide);
-  g_test_add_func("/find/common-id", test_find_common_id);
-  g_test_add_func("/find/categories", test_find_categories);
-  g_test_add_func("/find-refreshable/sync", test_find_refreshable_sync);
-  g_test_add_func("/find-refreshable/async", test_find_refreshable_async);
-  g_test_add_func("/find-refreshable/no-updates",
-                  test_find_refreshable_no_updates);
-  g_test_add_func("/install/sync", test_install_sync);
-  g_test_add_func("/install/sync-multiple", test_install_sync_multiple);
-  g_test_add_func("/install/async", test_install_async);
-  g_test_add_func("/install/async-multiple", test_install_async_multiple);
-  g_test_add_func("/install/async-failure", test_install_async_failure);
-  g_test_add_func("/install/async-cancel", test_install_async_cancel);
-  g_test_add_func("/install/async-multiple-cancel-first",
-                  test_install_async_multiple_cancel_first);
-  g_test_add_func("/install/async-multiple-cancel-last",
-                  test_install_async_multiple_cancel_last);
-  g_test_add_func("/install/progress", test_install_progress);
-  g_test_add_func("/install/needs-classic", test_install_needs_classic);
-  g_test_add_func("/install/classic", test_install_classic);
-  g_test_add_func("/install/not-classic", test_install_not_classic);
-  g_test_add_func("/install/needs-classic-system",
-                  test_install_needs_classic_system);
-  g_test_add_func("/install/needs-devmode", test_install_needs_devmode);
-  g_test_add_func("/install/devmode", test_install_devmode);
-  g_test_add_func("/install/dangerous", test_install_dangerous);
-  g_test_add_func("/install/jailmode", test_install_jailmode);
-  g_test_add_func("/install/channel", test_install_channel);
-  g_test_add_func("/install/revision", test_install_revision);
-  g_test_add_func("/install/not-available", test_install_not_available);
-  g_test_add_func("/install/channel-not-available",
-                  test_install_channel_not_available);
-  g_test_add_func("/install/revision-not-available",
-                  test_install_revision_not_available);
-  g_test_add_func("/install/snapd-restart", test_install_snapd_restart);
-  g_test_add_func("/install/async-snapd-restart",
-                  test_install_async_snapd_restart);
-  g_test_add_func("/install/auth-cancelled", test_install_auth_cancelled);
-  g_test_add_func("/install-stream/sync", test_install_stream_sync);
-  g_test_add_func("/install-stream/async", test_install_stream_async);
-  g_test_add_func("/install-stream/progress", test_install_stream_progress);
-  g_test_add_func("/install-stream/classic", test_install_stream_classic);
-  g_test_add_func("/install-stream/dangerous", test_install_stream_dangerous);
-  g_test_add_func("/install-stream/devmode", test_install_stream_devmode);
-  g_test_add_func("/install-stream/jailmode", test_install_stream_jailmode);
-  g_test_add_func("/try/sync", test_try_sync);
-  g_test_add_func("/try/async", test_try_async);
-  g_test_add_func("/try/progress", test_try_progress);
-  g_test_add_func("/try/not-a-snap", test_try_not_a_snap);
-  g_test_add_func("/refresh/sync", test_refresh_sync);
-  g_test_add_func("/refresh/async", test_refresh_async);
-  g_test_add_func("/refresh/progress", test_refresh_progress);
-  g_test_add_func("/refresh/channel", test_refresh_channel);
-  g_test_add_func("/refresh/no-updates", test_refresh_no_updates);
-  g_test_add_func("/refresh/not-installed", test_refresh_not_installed);
-  g_test_add_func("/refresh/not-in-store", test_refresh_not_in_store);
-  g_test_add_func("/refresh-all/sync", test_refresh_all_sync);
-  g_test_add_func("/refresh-all/async", test_refresh_all_async);
-  g_test_add_func("/refresh-all/progress", test_refresh_all_progress);
-  g_test_add_func("/refresh-all/no-updates", test_refresh_all_no_updates);
-  g_test_add_func("/remove/sync", test_remove_sync);
-  g_test_add_func("/remove/async", test_remove_async);
-  g_test_add_func("/remove/async-failure", test_remove_async_failure);
-  g_test_add_func("/remove/async-cancel", test_remove_async_cancel);
-  g_test_add_func("/remove/progress", test_remove_progress);
-  g_test_add_func("/remove/not-installed", test_remove_not_installed);
-  g_test_add_func("/remove/purge", test_remove_purge);
-  g_test_add_func("/enable/sync", test_enable_sync);
-  g_test_add_func("/enable/async", test_enable_async);
-  g_test_add_func("/enable/progress", test_enable_progress);
-  g_test_add_func("/enable/already-enabled", test_enable_already_enabled);
-  g_test_add_func("/enable/not-installed", test_enable_not_installed);
-  g_test_add_func("/disable/sync", test_disable_sync);
-  g_test_add_func("/disable/async", test_disable_async);
-  g_test_add_func("/disable/progress", test_disable_progress);
-  g_test_add_func("/disable/already-disabled", test_disable_already_disabled);
-  g_test_add_func("/disable/not-installed", test_disable_not_installed);
-  g_test_add_func("/switch/sync", test_switch_sync);
-  g_test_add_func("/switch/async", test_switch_async);
-  g_test_add_func("/switch/progress", test_switch_progress);
-  g_test_add_func("/switch/not-installed", test_switch_not_installed);
-  g_test_add_func("/check-buy/sync", test_check_buy_sync);
-  g_test_add_func("/check-buy/async", test_check_buy_async);
-  g_test_add_func("/check-buy/no-terms-not-accepted",
-                  test_check_buy_terms_not_accepted);
-  g_test_add_func("/check-buy/no-payment-methods",
-                  test_check_buy_no_payment_methods);
-  g_test_add_func("/check-buy/not-logged-in", test_check_buy_not_logged_in);
-  g_test_add_func("/buy/sync", test_buy_sync);
-  g_test_add_func("/buy/async", test_buy_async);
-  g_test_add_func("/buy/not-logged-in", test_buy_not_logged_in);
-  g_test_add_func("/buy/not-available", test_buy_not_available);
-  g_test_add_func("/buy/terms-not-accepted", test_buy_terms_not_accepted);
-  g_test_add_func("/buy/no-payment-methods", test_buy_no_payment_methods);
-  g_test_add_func("/buy/invalid-price", test_buy_invalid_price);
-  g_test_add_func("/create-user/sync", test_create_user_sync);
-  // g_test_add_func ("/create-user/async", test_create_user_async);
-  g_test_add_func("/create-user/sudo", test_create_user_sudo);
-  g_test_add_func("/create-user/known", test_create_user_known);
-  g_test_add_func("/create-users/sync", test_create_users_sync);
-  // g_test_add_func ("/create-users/async", test_create_users_async);
-  g_test_add_func("/get-users/sync", test_get_users_sync);
-  g_test_add_func("/get-users/async", test_get_users_async);
-  g_test_add_func("/get-sections/sync", test_get_sections_sync);
-  g_test_add_func("/get-sections/async", test_get_sections_async);
-  g_test_add_func("/get-categories/sync", test_get_categories_sync);
-  g_test_add_func("/get-categories/async", test_get_categories_async);
-  g_test_add_func("/aliases/get-sync", test_aliases_get_sync);
-  g_test_add_func("/aliases/get-async", test_aliases_get_async);
-  g_test_add_func("/aliases/get-empty", test_aliases_get_empty);
-  g_test_add_func("/aliases/alias-sync", test_aliases_alias_sync);
-  g_test_add_func("/aliases/alias-async", test_aliases_alias_async);
-  g_test_add_func("/aliases/unalias-sync", test_aliases_unalias_sync);
-  g_test_add_func("/aliases/unalias-async", test_aliases_unalias_async);
-  g_test_add_func("/aliases/unalias-no-snap-sync",
-                  test_aliases_unalias_no_snap_sync);
-  g_test_add_func("/aliases/prefer-sync", test_aliases_prefer_sync);
-  g_test_add_func("/aliases/prefer-async", test_aliases_prefer_async);
-  g_test_add_func("/run-snapctl/sync", test_run_snapctl_sync);
-  g_test_add_func("/run-snapctl/async", test_run_snapctl_async);
-  g_test_add_func("/run-snapctl/unsuccessful", test_run_snapctl_unsuccessful);
-  g_test_add_func("/run-snapctl/legacy", test_run_snapctl_legacy);
-  g_test_add_func("/download/sync", test_download_sync);
-  g_test_add_func("/download/async", test_download_async);
-  g_test_add_func("/download/channel-revision", test_download_channel_revision);
-  g_test_add_func("/themes/check/sync", test_themes_check_sync);
-  g_test_add_func("/themes/check/async", test_themes_check_async);
-  g_test_add_func("/themes/install/sync", test_themes_install_sync);
-  g_test_add_func("/themes/install/async", test_themes_install_async);
-  g_test_add_func("/themes/install/no-snaps", test_themes_install_no_snaps);
-  g_test_add_func("/themes/install/progress", test_themes_install_progress);
-  g_test_add_func("/get-logs/sync", test_get_logs_sync);
-  g_test_add_func("/get-logs/async", test_get_logs_async);
-  g_test_add_func("/get-logs/names", test_get_logs_names);
-  g_test_add_func("/get-logs/limit", test_get_logs_limit);
-  g_test_add_func("/follow-logs/sync", test_follow_logs_sync);
-  g_test_add_func("/follow-logs/async", test_follow_logs_async);
-  g_test_add_func("/get-model-assertion/sync", test_get_model_assertion_sync);
-  g_test_add_func("/get-model-assertion/async", test_get_model_assertion_async);
-  g_test_add_func("/get-serial-assertion/sync", test_get_serial_assertion_sync);
-  g_test_add_func("/get-serial-assertion/async",
-                  test_get_serial_assertion_async);
   g_test_add_func("/stress/basic", test_stress);
 
   return g_test_run();

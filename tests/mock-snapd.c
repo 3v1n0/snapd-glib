@@ -5382,6 +5382,7 @@ static GSocket *open_listening_socket(SoupServer *server,
   if (!g_socket_bind(socket, address, TRUE, error))
     return NULL;
 
+  g_socket_set_listen_backlog(socket, 32768);
   if (!g_socket_listen(socket, error))
     return NULL;
 
