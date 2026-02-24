@@ -116,6 +116,9 @@ typedef struct {
   GMutex requests_mutex;
   GPtrArray *requests;
 
+  /* Requests waiting for a connection slot */
+  GQueue *pending_requests;
+
   /* Whether to send the X-Allow-Interaction request header */
   gboolean allow_interaction;
 
@@ -150,6 +153,9 @@ G_DEFINE_TYPE_WITH_PRIVATE(SnapdClient, snapd_client, G_TYPE_OBJECT)
 
 /* Number of milliseconds to poll for status in asynchronous operations */
 #define ASYNC_POLL_TIME 100
+
+/* Maximum number of concurrent socket connections to snapd */
+#define SNAPD_MAX_CONNECTIONS 64
 
 typedef struct {
   int ref_count;
@@ -210,6 +216,7 @@ static RequestData *get_request_data(SnapdClient *self, SnapdRequest *request) {
   return NULL;
 }
 
+/* Must be called with requests_mutex held */
 static void complete_request_unlocked(SnapdClient *self, SnapdRequest *request,
                                       GError *error) {
   SnapdClientPrivate *priv = snapd_client_get_instance_private(self);
@@ -223,8 +230,17 @@ static void complete_request_unlocked(SnapdClient *self, SnapdRequest *request,
 static void complete_request(SnapdClient *self, SnapdRequest *request,
                              GError *error) {
   SnapdClientPrivate *priv = snapd_client_get_instance_private(self);
-  g_autoptr(GMutexLocker) locker = g_mutex_locker_new(&priv->requests_mutex);
-  complete_request_unlocked(self, request, error);
+  SnapdRequest *next_request = NULL;
+  {
+    g_autoptr(GMutexLocker) locker = g_mutex_locker_new(&priv->requests_mutex);
+    complete_request_unlocked(self, request, error);
+    next_request = g_queue_pop_head(priv->pending_requests);
+  }
+
+  if (next_request != NULL) {
+    send_request(self, next_request);
+    g_object_unref(next_request);
+  }
 }
 
 static gboolean async_poll_cb(gpointer data) {
@@ -830,6 +846,15 @@ static void send_request(SnapdClient *self, SnapdRequest *request) {
 
   // This code can be replaced with support in libsoup3 at some point.
   // https://gitlab.gnome.org/GNOME/libsoup/-/issues/75
+
+  /* If we have reached the connection limit, queue for later. */
+  {
+    g_autoptr(GMutexLocker) locker = g_mutex_locker_new(&priv->requests_mutex);
+    if (priv->requests->len >= SNAPD_MAX_CONNECTIONS) {
+      g_queue_push_tail(priv->pending_requests, g_object_ref(request));
+      return;
+    }
+  }
 
   _snapd_request_set_source_object(request, G_OBJECT(self));
 
@@ -5002,6 +5027,10 @@ static void snapd_client_finalize(GObject *object) {
   g_clear_pointer(&priv->user_agent, g_free);
   g_clear_object(&priv->auth_data);
   g_clear_pointer(&priv->requests, g_ptr_array_unref);
+  if (priv->pending_requests != NULL) {
+    g_queue_free_full(priv->pending_requests, g_object_unref);
+    priv->pending_requests = NULL;
+  }
   if (priv->snapd_socket != NULL)
     g_socket_close(priv->snapd_socket, NULL);
   g_clear_object(&priv->snapd_socket);
@@ -5033,6 +5062,7 @@ static void snapd_client_init(SnapdClient *self) {
       g_ptr_array_new_with_free_func((GDestroyNotify)request_data_unref);
   priv->buffer = g_byte_array_new();
   priv->response_body = g_byte_array_new();
+  priv->pending_requests = g_queue_new();
   // nanoseconds, by default, is set to -1 to specify that the value
   // is not set, and thus the decimal value from GDateTime should be
   // used when generating the timestamp for the AFTER field in the
